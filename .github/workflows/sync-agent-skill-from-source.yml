@@ -1,0 +1,101 @@
+name: Sync Agent Skill From Source
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Release sync updates `main`; test sync updates a short-lived test branch.
+        required: true
+        default: test
+        type: choice
+        options:
+          - test
+          - release
+      source_repository:
+        description: Source repository containing the canonical skill content.
+        required: true
+        type: string
+      source_ref:
+        description: Git ref to read from the source repository.
+        required: true
+        type: string
+      source_skill_dir:
+        description: Path to the source skill directory inside the source repository.
+        required: true
+        type: string
+      target_branch:
+        description: Branch to update in this repo.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  sync-skill:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_SKILL_DIR: skills/rivaliq-api
+
+    steps:
+      - name: Validate source read token
+        env:
+          SOURCE_REPO_TOKEN: ${{ secrets.RIVALIQ_SERVER_SKILL_READ_TOKEN }}
+        run: |
+          : "${SOURCE_REPO_TOKEN:?Missing RIVALIQ_SERVER_SKILL_READ_TOKEN secret}"
+
+      - name: Checkout public repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout source repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source_repository }}
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.RIVALIQ_SERVER_SKILL_READ_TOKEN }}
+          path: source-repo
+
+      - name: Validate source skill directory
+        run: |
+          if [ ! -f "source-repo/${{ inputs.source_skill_dir }}/SKILL.md" ]; then
+            echo "ERROR: source-repo/${{ inputs.source_skill_dir }}/SKILL.md is missing"
+            exit 1
+          fi
+
+      - name: Sync skill content
+        run: |
+          git switch -C "${{ inputs.target_branch }}"
+          rm -rf "$TARGET_SKILL_DIR"
+          mkdir -p "$(dirname "$TARGET_SKILL_DIR")"
+          cp -R "source-repo/${{ inputs.source_skill_dir }}" "$TARGET_SKILL_DIR"
+
+      - name: Commit synced skill
+        id: commit
+        run: |
+          git config user.name "rivaliq-bot"
+          git config user.email "rivaliq-bot@users.noreply.github.com"
+          git add "$TARGET_SKILL_DIR"
+
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git commit -m "Sync rivaliq-api from ${{ inputs.source_repository }}@${{ inputs.source_ref }}"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Push synced branch
+        if: steps.commit.outputs.changed == 'true'
+        run: |
+          git push --force-with-lease origin "${{ inputs.target_branch }}"
+
+      - name: Publish sync instructions
+        run: |
+          echo "Mode: ${{ inputs.mode }}"
+          echo "Source repo: ${{ inputs.source_repository }}"
+          echo "Source ref: ${{ inputs.source_ref }}"
+          echo "Target branch: ${{ inputs.target_branch }}"
+          echo "Branch URL: https://github.com/${{ github.repository }}/tree/${{ inputs.target_branch }}"
+          echo "Tarball URL: https://github.com/${{ github.repository }}/archive/refs/heads/${{ inputs.target_branch }}.tar.gz"
