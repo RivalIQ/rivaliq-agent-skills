@@ -150,9 +150,48 @@ channel returns every metric for every date, which can get large.
 GET /landscapes/:landscapeId/socialPosts?timePeriod=last30Days&channel=instagram
 ```
 
-Returns up to 100 individual posts with `companyName`, `postText`,
-`engagementTotal`, `engagementRate`, `publishedAt`, `postLink`, `views`, and
-`type` such as photo, video, reel, or carousel.
+Returns individual posts. The `limit` query parameter defaults to 100 and caps
+at 500; there is no paging cursor. The useful keys are `companyName`,
+`companyId`, `presenceHandle`, `channel`, `postNativeId`, `message`,
+`publishedAt`, `postLink`, `type`, `engagementTotal`, `engagementRate`,
+`estimatedImpressions`, and `views`.
+
+When you need more than 500 posts, use the two-step bulk download:
+
+```text
+GET /landscapes/:landscapeId/bulkSocialPosts?timePeriod=last90Days&channel=all&twitterTweetType=all
+GET /bulkDownload/:token/status
+```
+
+The first call takes the same `timePeriod` (or `mainPeriodStart` and
+`mainPeriodEnd`), `channel`, `companyId`, `companySet`, `postTag`,
+`searchTerm`, `postType`, `twitterTweetType`, `updatedSince`, `format`, and
+`includePostTags` parameters as `socialPosts`, but not `orderBy`, `direction`,
+or `limit`; sending any of those three fails with
+`400 UnexpectedParameters`. It answers `202 {"token": "..."}`. Poll the
+second call with that token (same `apiKey`)
+until `status` changes: `1` = still running, `2` = ready, `3` = failed with an
+`error` message. When `status` is `2` the response includes `href`, a
+pre-signed URL for the complete file in the requested `format` (`json` or
+`csv`). A non-empty export also returns `nextUpdatedSince`; pass it as
+`updatedSince` on the next run. It is deliberately set 60 seconds before the
+last capture, so successive files overlap: de-duplicate on `channel` +
+`postNativeId` instead of appending. The file is subject to the same Twitter/X
+redaction described below.
+
+`twitterTweetType` defaults to `normal` on both endpoints, which excludes
+replies and retweets. Pass `twitterTweetType=all` when you want every X post.
+
+**Twitter/X posts are redacted**
+
+For rows where `channel: "twitter"`, the content fields `message`,
+`publishedAt`, `postLink`, `type`, `link`, `linkTitle`, `linkDescription`,
+`image`, `imageLarge`, `applause`, `conversation`, and `amplification` are
+always `null` because of Twitter/X's terms of service. Identity and engagement
+totals remain available. Detect a withheld row with `publishedAt == null`, and
+resolve `postNativeId` against the Twitter/X API if you need the text. A null
+`message` means the text is withheld, not that the post had none; never
+summarize a brand's Twitter/X content as absent on that basis.
 
 Use this for:
 
@@ -186,7 +225,7 @@ These are documented in the API reference but were not needed for reporting:
 - `GET /landscapes/:id/postTags`
 - `POST /landscapes`
 - `PUT /landscapes/:id`
-- `GET /landscapes/:id/bulkSocialPosts`
+- `GET /landscapes/:id/bulkSocialPosts` (see Social Posts above)
 - `GET /landscapes/:id/privateData/*`
 
 ## Common Pitfalls
@@ -199,6 +238,13 @@ These are documented in the API reference but were not needed for reporting:
 4. "user has invalid plan": the token is recognized but the account does not
    have API access enabled.
 5. Endpoint guessing: do not guess undocumented endpoint paths.
+6. `postText` does not exist in the response; the post text field is `message`.
+7. A null `message` on a Twitter/X row means withheld content, not empty
+   content; detect it with `publishedAt == null`. See "Twitter/X posts are
+   redacted" above.
+8. Do not pass the token returned by `bulkSocialPosts` back to that endpoint;
+   it goes to `GET /bulkDownload/:token/status`, and the data comes from the
+   `href` in that response once `status` is `2`.
 
 ## What You Can Build With These Endpoints
 
